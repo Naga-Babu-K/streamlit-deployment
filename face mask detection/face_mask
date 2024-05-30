@@ -1,0 +1,83 @@
+import streamlit as st
+from keras.models import Model
+from keras.layers import Dense, Dropout, GlobalAveragePooling2D
+from keras.applications import MobileNetV2
+import cv2
+import numpy as np
+from PIL import Image
+from mtcnn import MTCNN
+
+# Define the fine-tuned MobileNetV2 model
+def create_fine_tuned_model():
+    base_model = MobileNetV2(input_shape=(227, 227, 3), include_top=False, weights='imagenet')
+    base_model.trainable = False
+
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(128, activation='relu')(x)
+    x = Dropout(0.5)(x)
+    predictions = Dense(2, activation='softmax')(x)
+
+    model = Model(inputs=base_model.input, outputs=predictions)
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# Load or create the model
+model = create_fine_tuned_model()
+# Assuming you've already trained and saved your model, load it here
+# model.load_weights('path_to_your_model.h5')
+
+# Use a robust face detection model (MTCNN)
+face_detector = MTCNN()
+
+# Streamlit App
+st.title("[Mask Detection APP]😷")
+
+# Upload box for image
+image_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+def preprocess_image(image):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = cv2.resize(image, (227, 227))
+    image = np.expand_dims(image, axis=0)
+    return image / 255.0
+
+def predict_mask(image, threshold=0.5):
+    prediction = model.predict(image)
+    st.write(f"Model prediction: {prediction}")  # Debug log
+    confidence = max(prediction[0])
+    if confidence < threshold:
+        return None, None
+    return np.argmax(prediction), prediction
+
+def resize_image(image, width, height):
+    return cv2.resize(image, (width, height))
+
+if image_file is not None:
+    image = Image.open(image_file)
+    image = np.array(image)
+    
+    # Detect faces
+    faces = face_detector.detect_faces(image)
+    if not faces:
+        st.write("No faces detected")
+    else:
+        for face in faces:
+            x, y, w, h = face['box']
+            cv2.rectangle(image, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            roi = image[y:y+h, x:x+w]
+            roi = preprocess_image(roi)
+            label, prediction = predict_mask(roi)
+            if label is not None:
+                if label == 0:
+                    label_text =  'Mask 😷'
+                else:
+                    label_text = 'No Mask 😊'
+                confidence = prediction[0][label]
+                st.write(f"Prediction: {label_text}, Confidence: {confidence:.2f}")
+                cv2.putText(image, f'{label_text} ({confidence:.2f})', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+            else:
+                st.write("Low confidence prediction, not displaying label")
+
+        resized_image = resize_image(image, width=400, height=400)  # Adjust dimensions as needed
+        st.image(resized_image, caption="Processed Image with Face Detection", use_column_width=True)
